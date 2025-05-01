@@ -1,0 +1,514 @@
+#include "../clientlib/decompiler_imports.dl"
+#include "../clientlib/loops_semantics.dl"
+#include "../clientlib/guards.dl"
+#include "../clientlib/vulnerability_macros.dl"
+
+.decl Feature_PublicFunctionNumber(publicFuncNum: number)
+.output Feature_PublicFunctionNumber
+Feature_PublicFunctionNumber(publicFuncNum) :-
+    publicFuncNum = count : { PublicFunctionSelector(_, _) }.
+
+.decl Feature_PrivateFunctionNumber(privateFuncNum: number)
+.output Feature_PrivateFunctionNumber
+Feature_PrivateFunctionNumber(privateFuncNum) :-
+    Feature_PublicFunctionNumber(publicFuncNum),
+    totalFuncNum = count : { FunctionEntry(func), func != "0x0" },
+    privateFuncNum = totalFuncNum - publicFuncNum.
+
+.decl Feature_TotalFunctionNumber(totalFuncNum: number)
+.output Feature_TotalFunctionNumber
+Feature_TotalFunctionNumber(totalFuncNum) :-
+    Feature_PublicFunctionNumber(publicFuncNum),
+    Feature_PrivateFunctionNumber(privateFuncNum),
+    totalFuncNum = publicFuncNum + privateFuncNum.
+
+.decl Feature_PublicFunctionProportion(publicFuncProp: float)
+.output Feature_PublicFunctionProportion
+Feature_PublicFunctionProportion(publicFuncProp) :-
+    Feature_PublicFunctionNumber(publicFuncNum),
+    Feature_TotalFunctionNumber(totalFuncNum),
+    publicFuncNum > 0,
+    publicFuncProp = as(publicFuncNum, float) / as(totalFuncNum, float).
+
+Feature_PublicFunctionProportion(0.0) :-
+    Feature_PublicFunctionNumber(publicFuncNum),
+    publicFuncNum = 0.
+
+
+.decl FlashloanPair(callbackName: symbol, callbackSelector: symbol, flashloanName: symbol, flashloanSelector: symbol)
+FlashloanPair("uniswapV2Call", "0x10d1e85c", "swap", "0x022c0d9f").
+FlashloanPair("uniswapV3FlashCallback", "0xe9cbafb0", "flash", "0x490e6cbc").
+FlashloanPair("uniswapV3SwapCallback", "0xfa461e33", "swap", "0x128acb08").
+FlashloanPair("pancakeCall", "0x84800812", "swap", "0x022c0d9f").
+FlashloanPair("pancakeV3FlashCallback", "0xa1d48336", "flash", "0x490e6cbc").
+FlashloanPair("DPPFlashLoanCall", "0x7ed1f1dd", "flashLoan", "0xd0a494e4").
+FlashloanPair("DVMFlashLoanCall", "0xeb2021c3", "flashLoan", "0xd0a494e4").
+FlashloanPair("executeOperation", "0x920f5c84", "flashLoan", "0xab9c4b5d").
+FlashloanPair("receiveFlashLoan", "0xf04f2707", "flashLoan", "0x5c38449e").
+FlashloanPair("onFlashLoan", "0x23e30c8b", "flashLoan", "0x5cffe9de").
+FlashloanPair("BiswapCall", "0x5b3bc4fe", "swap", "0x022c0d9f").
+
+.decl Feature_FlashloanCallbackNumber(flashloanCallbackNum: number)
+.output Feature_FlashloanCallbackNumber
+Feature_FlashloanCallbackNumber(flashloanCallbackNum) :-
+    flashloanCallbackNum = count : {
+        PublicFunctionSelector(_, selector),
+        FlashloanPair(_, selector, _, _)
+    }.
+
+.decl Feature_FlashlaonCallbackProportion(flashloanCallbackProp: float)
+.output Feature_FlashlaonCallbackProportion
+Feature_FlashlaonCallbackProportion(flashloanCallbackProp) :-
+    Feature_FlashloanCallbackNumber(flashloanCallbackNum),
+    Feature_PublicFunctionNumber(publicFuncNum),
+    flashloanCallbackNum > 0,
+    flashloanCallbackProp = as(flashloanCallbackNum, float) / as(publicFuncNum, float).
+
+Feature_FlashlaonCallbackProportion(0.0) :-
+    Feature_FlashloanCallbackNumber(flashloanCallbackNum),
+    flashloanCallbackNum = 0.
+
+
+.decl BlockCallNumber(func:symbol, block: symbol, externalCallNum: number, internalCallNum: number)
+.output BlockCallNumber
+BlockCallNumber(func, block, externalCallNum, internalCallNum) :-
+    Statement_Block(stmt, block),
+    InFunction(block, func),
+    func != "0x0",
+    callNum = count : Statement_Opcode(stmt, "CALL"),
+    staticCallNum = count : Statement_Opcode(stmt, "STATICCALL"),
+    delegateCallNum = count : Statement_Opcode(stmt, "DELEGATECALL"),
+    externalCallNum = callNum + staticCallNum + delegateCallNum,
+    internalCallNum = count : { Statement_Opcode(stmt, "CALLPRIVATE") }.
+
+.decl Feature_ExternalCallNumber(totalExternalCallNum: number)
+.output Feature_ExternalCallNumber
+Feature_ExternalCallNumber(totalExternalCallNum) :-
+    totalExternalCallNum = sum(externalCallNum) : BlockCallNumber(_, _, externalCallNum, _).
+
+.decl Feature_InternalCallNumber(totalInternalCallNum: number)
+.output Feature_InternalCallNumber
+Feature_InternalCallNumber(totalInternalCallNum) :-
+    totalInternalCallNum = sum(internalCallNum) : BlockCallNumber(_, _, _, internalCallNum).
+
+.decl Feature_TotalCallNumber(totalCallNum: number)
+.output Feature_TotalCallNumber
+Feature_TotalCallNumber(totalCallNum) :-
+    Feature_ExternalCallNumber(totalExternalCallNum),
+    Feature_InternalCallNumber(totalInternalCallNum),
+    totalCallNum = totalExternalCallNum + totalInternalCallNum.
+
+.decl Feature_ExternalCallProportion(externalCallProp: float)
+.output Feature_ExternalCallProportion
+Feature_ExternalCallProportion(externalCallProp) :-
+    Feature_TotalCallNumber(totalCallNum),
+    Feature_ExternalCallNumber(totalExternalCallNum),
+    totalExternalCallNum > 0,
+    externalCallProp = as(totalExternalCallNum, float)/ as(totalCallNum, float).
+
+Feature_ExternalCallProportion(0.0) :-
+    Feature_ExternalCallNumber(totalExternalCallNum),
+    totalExternalCallNum = 0.
+
+.decl Feature_DelegateCallNumber(delegateCallNum: number)
+.output Feature_DelegateCallNumber
+Feature_DelegateCallNumber(delegateCallNum) :-
+    delegateCallNum = count : { Statement_Opcode(_, "DELEGATECALL") }.
+
+.decl Feature_IsSelfDestructive(isSelfDestructive: number)
+.output Feature_IsSelfDestructive
+Feature_IsSelfDestructive(1) :-
+    Statement_Opcode(_, "SELFDESTRUCT").
+Feature_IsSelfDestructive(0) :-
+    !Statement_Opcode(_, "SELFDESTRUCT").
+
+.decl ERC20TokenFunction(signature: symbol, selector: symbol)
+ERC20TokenFunction("totalSupply()", "0x18160ddd").
+ERC20TokenFunction("balanceOf(address)", "0x70a08231").
+ERC20TokenFunction("transfer(address,uint256)", "0xa9059cbb").
+ERC20TokenFunction("transferFrom(address,address,uint256)", "0x23b872dd").
+ERC20TokenFunction("approve(address,uint256)", "0x95ea7b3").
+ERC20TokenFunction("allowance(address,address)", "0xdd62ed3e").
+
+.decl ERC721TokenFunction(signature: symbol, selector: symbol)
+ERC721TokenFunction("balanceOf(address)", "0x70a08231").
+ERC721TokenFunction("ownerOf(uint256)", "0x6352211e").
+ERC721TokenFunction("safeTransferFrom(address,address,uint256,bytes)", "0xb88d4fde").
+ERC721TokenFunction("safeTransferFrom(address,address,uint256)", "0x42842e0e").
+ERC721TokenFunction("transferFrom(address,address,uint256)", "0x23b872dd").
+ERC721TokenFunction("approve(address,uint256)", "0x95ea7b3").
+ERC721TokenFunction("setApprovalForAll(address,bool)", "0xa22cb465").
+ERC721TokenFunction("getApproved(uint256)", "0x81812fc").
+ERC721TokenFunction("isApprovedForAll(address,address)", "0xe985e9c5").
+
+.decl ERC1155TokenFunction(signature: symbol, selector: symbol)
+ERC1155TokenFunction("safeTransferFrom(address,address,uint256,uint256,bytes)", "0xf242432a").
+ERC1155TokenFunction("safeBatchTransferFrom(address,address,uint256[],uint256[],bytes)", "0x2eb2c2d6").
+ERC1155TokenFunction("balanceOf(address,uint256)", "0xfdd58e").
+ERC1155TokenFunction("balanceOfBatch(address[],uint256[])", "0x4e1273f4").
+ERC1155TokenFunction("setApprovalForAll(address,bool)", "0xa22cb465").
+ERC1155TokenFunction("isApprovedForAll(address,address)", "0xe985e9c5").
+
+.decl ERC20Function(selector: symbol)
+ERC20Function(selector) :-
+    ERC20TokenFunction(_, selector),
+    PublicFunctionSelector(_, selector).
+    
+.decl ERC721Function(selector: symbol)
+ERC721Function(selector) :-
+    ERC721TokenFunction(_, selector),
+    PublicFunctionSelector(_, selector).
+
+.decl ERC1155Function(selector: symbol)
+ERC1155Function(selector) :-
+    ERC1155TokenFunction(_, selector),
+    PublicFunctionSelector(_, selector).
+    
+.decl Feature_IsTokenContract(isTokenContract: number)
+.output Feature_IsTokenContract
+Feature_IsTokenContract(1) :-
+    (count: ERC20TokenFunction(_, _) = count: ERC20Function(_); 
+     count: ERC721TokenFunction(_, _) = count: ERC721Function(_); 
+     count: ERC1155TokenFunction(_, _) = count: ERC1155Function(_)).
+
+Feature_IsTokenContract(0) :-
+    (count: ERC20TokenFunction(_, _) != count: ERC20Function(_),
+     count: ERC721TokenFunction(_, _) != count: ERC721Function(_),
+     count: ERC1155TokenFunction(_, _) != count: ERC1155Function(_)).
+
+.decl Feature_IsERC1967Proxy(isERC1967Proxy: number) 
+.output Feature_IsERC1967Proxy
+Feature_IsERC1967Proxy(1) :-
+    Statement_Opcode(_, "DELEGATECALL"),
+    Variable_Value(_, "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc").
+
+Feature_IsERC1967Proxy(0) :-
+    (!Statement_Opcode(_, "DELEGATECALL");
+    !Variable_Value(_, "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")).
+
+
+.decl ExternalCall(func: Function, callStmt: Statement)
+.output ExternalCall
+ExternalCall(func, callStmt) :-
+  CALLStatement(callStmt, _),
+  Statement_Function(callStmt, func),
+  func != "0x0".
+
+// unable to resolve abi.encode...
+.decl ExternalCallResolved(func: Function, callStmt: Statement, selector: symbol, signature: symbol)
+.output ExternalCallResolved
+ExternalCallResolved(func, callStmt, selector, signature) :-
+  ExternalCall(func, callStmt),
+  CallToSignature(callStmt, signature),
+  ConstantPossibleSigHash(_, selector, signature).
+
+ExternalCallResolved(func, callStmt, "", "transferNativeToken()") :-
+  ExternalCall(func, callStmt),
+  CALL(callStmt, _, _, _, _, _, _, _,_),
+  allArgs = count: StatementUsesMemory_ActualMemoryArg(callStmt, _, _, _),
+  allArgs = 0.
+  
+.decl TokenCall(signature: symbol, selector: symbol)
+TokenCall("transfer(address,uint256)", "0xa9059cbb").
+TokenCall("balanceOf(address)", "0x70a08231").
+TokenCall("approve(address,uint256)", "0x095ea7b3").
+TokenCall("totalSupply()", "0x18160ddd").
+TokenCall("allowance(address,address)", "0xdd62ed3e").
+TokenCall("transferFrom(address,address,uint256)", "0x23b872dd").
+TokenCall("mint(address,uint256)", "0x40c10f19").
+TokenCall("burn(address,uint256)", "0x9dc29fac").
+TokenCall("withdraw(uint256)", "0x2e1a7d4d").
+TokenCall("deposit()", "0xd0e30db0").
+TokenCall("skim(address)", "0xbc25cf77").
+TokenCall("sync()", "0xfff6cae9").
+TokenCall("token0()", "0x0dfe1681").
+TokenCall("token1()", "0xd21220a7").
+TokenCall("getReserves(address,address,address)", "0x32749461").
+
+.decl FunctionTokenCall(func: symbol, callStmt: symbol, selector: symbol, signature: symbol)
+.output FunctionTokenCall
+FunctionTokenCall(func, callStmt, selector, signature) :-
+    ExternalCallResolved(func, callStmt, selector, signature),
+    (TokenCall(_, selector); contains("Swap", signature); contains("swap", signature)).
+
+.decl FunctionTokenCallFurther(func: symbol, callStmt: symbol, selector: symbol, signature: symbol)
+.output FunctionTokenCallFurther
+
+// Step 1: Include direct TokenCalls from public functions
+FunctionTokenCallFurther(func, callStmt, selector, signature) :-
+    FunctionTokenCall(func, callStmt, selector, signature),
+    PublicFunctionSelector(func, _).
+
+// Step 2: Include TokenCalls from private functions called by public functions
+FunctionTokenCallFurther(publicFunc, callStmt, selector, signature) :-
+    PublicFunctionSelector(publicFunc, _),
+    CALLPRIVATE(callPrivateStmt, privateFuncVar),
+    Variable_Value(privateFuncVar, privateFunc),
+    Statement_Function(callPrivateStmt, publicFunc),
+    FunctionTokenCall(privateFunc, callStmt, selector, signature).
+
+// Step 3: Include TokenCalls from flashloan callback functions if flashloan function is called in public function
+// not complete for cyclic iteration
+FunctionTokenCallFurther(publicFunc, callStmt, selector, signature) :-
+    PublicFunctionSelector(publicFunc, _),
+    FunctionTokenCall(publicFunc, _, flashloanSelector, _),
+    FlashloanPair(_, callbackSelector, _, flashloanSelector),
+    PublicFunctionSelector(callbackFunc, callbackSelector),
+    FunctionTokenCall(callbackFunc, callStmt, selector, signature).
+
+.decl Feature_TokenCallNumber(tokenCallNum: number)
+.output Feature_TokenCallNumber
+Feature_TokenCallNumber(tokenCallNum) :-
+    tokenCallNum = count : FunctionTokenCall(_, _, _, _).
+
+.decl Feature_TokenCallProportion(tokenCallProp: float)
+.output Feature_TokenCallProportion
+Feature_TokenCallProportion(tokenCallProp) :-
+    Feature_TokenCallNumber(tokenCallNum),
+    Feature_ExternalCallNumber(totalExternalCallNum),
+    tokenCallNum > 0,
+    tokenCallProp = as(tokenCallNum, float) / as(totalExternalCallNum, float).
+    
+Feature_TokenCallProportion(0.0) :-
+    Feature_TokenCallNumber(tokenCallNum),
+    tokenCallNum = 0.
+    
+.decl Feature_MaxTokenCallNumber(maxTokenCallNum: number)
+.output Feature_MaxTokenCallNumber
+Feature_MaxTokenCallNumber(maxTokenCallNum) :-
+    maxTokenCallNum = max(callCount) : {
+        FunctionTokenCallFurther(func, _, _, _),
+        callCount = count : { FunctionTokenCallFurther(func, _, _, _) }
+    }.
+
+Feature_MaxTokenCallNumber(0) :-
+    !FunctionTokenCallFurther(_, _, _, _).
+
+.decl Feature_AvgTokenCallNumber(avgTokenCallNum: float)
+.output Feature_AvgTokenCallNumber
+Feature_AvgTokenCallNumber(avgTokenCallNum) :-
+    Feature_TokenCallNumber(totalTokenCalls),
+    Feature_PublicFunctionNumber(publicFuncNum),
+    totalTokenCalls > 0,
+    publicFuncNum > 0,
+    avgTokenCallNum = as(totalTokenCalls, float) / as(publicFuncNum, float).
+
+Feature_AvgTokenCallNumber(0.0) :-
+    Feature_TokenCallNumber(totalTokenCalls),
+    totalTokenCalls = 0.
+
+Feature_AvgTokenCallNumber(0.0) :-
+    Feature_PublicFunctionNumber(publicFuncNum),
+    publicFuncNum = 0.
+
+.decl AllFeature(PublicFuncNum: number, PrivateFuncNum: number,
+                 totalFuncNum: number, publicFuncProp: float, 
+                 flashloanCallbackNum: number, flashloanCallbackProp: float, 
+                 externalCallNum: number, internalCallNum: number,
+                 totalCallNum: number, externalCallProp: float,
+                 delegateCallNum: number, tokenCallNum: number,
+                 tokenCallProp: float, maxTokenCallNum: number,
+                 avgTokenCallNum: float, isTokenContract: number,
+                 isERC1967Proxy: number, isSelfDestructive: number,
+                 transferCallCount: number, balanceOfCallCount: number, approveCallCount: number,
+                 totalSupplyCallCount: number, allowanceCallCount: number,
+                 transferFromCallCount: number, mintCallCount: number,
+                 burnCallCount: number, withdrawCallCount: number,
+                 depositCallCount: number, skimCallCount: number,
+                 syncCallCount: number, token0CallCount: number,
+                 token1CallCount: number, getReservesCallCount: number,
+                 swapCallCount: number)
+.output AllFeature
+
+AllFeature(
+    PublicFuncNum, PrivateFuncNum,
+    totalFuncNum, publicFuncProp, 
+    flashloanCallbackNum, flashloanCallbackProp, 
+    externalCallNum, internalCallNum,
+    totalCallNum, externalCallProp,
+    delegateCallNum, tokenCallNum,
+    tokenCallProp, maxTokenCallNum,
+    avgTokenCallNum, isTokenContract,
+    isERC1967Proxy, isSelfDestructive,
+    transferCallCount, balanceOfCallCount, approveCallCount,
+    totalSupplyCallCount, allowanceCallCount,
+    transferFromCallCount, mintCallCount,
+    burnCallCount, withdrawCallCount,
+    depositCallCount, skimCallCount,
+    syncCallCount, token0CallCount,
+    token1CallCount, getReservesCallCount,
+    swapCallCount
+) :-
+    Feature_PublicFunctionNumber(PublicFuncNum),
+    Feature_PrivateFunctionNumber(PrivateFuncNum),
+    Feature_TotalFunctionNumber(totalFuncNum),
+    Feature_PublicFunctionProportion(publicFuncProp),
+    Feature_FlashloanCallbackNumber(flashloanCallbackNum),
+    Feature_FlashlaonCallbackProportion(flashloanCallbackProp),
+    Feature_ExternalCallNumber(externalCallNum),
+    Feature_InternalCallNumber(internalCallNum),
+    Feature_TotalCallNumber(totalCallNum),
+    Feature_ExternalCallProportion(externalCallProp),
+    Feature_DelegateCallNumber(delegateCallNum),
+    Feature_TokenCallNumber(tokenCallNum),
+    Feature_TokenCallProportion(tokenCallProp),
+    Feature_MaxTokenCallNumber(maxTokenCallNum),
+    Feature_AvgTokenCallNumber(avgTokenCallNum),
+    Feature_IsTokenContract(isTokenContract),
+    Feature_IsERC1967Proxy(isERC1967Proxy),
+    Feature_IsSelfDestructive(isSelfDestructive),
+    Feature_TransferCallCount(transferCallCount),
+    Feature_BalanceOfCallCount(balanceOfCallCount),
+    Feature_ApproveCallCount(approveCallCount),
+    Feature_TotalSupplyCallCount(totalSupplyCallCount),
+    Feature_AllowanceCallCount(allowanceCallCount),
+    Feature_TransferFromCallCount(transferFromCallCount),
+    Feature_MintCallCount(mintCallCount),
+    Feature_BurnCallCount(burnCallCount),
+    Feature_WithdrawCallCount(withdrawCallCount),
+    Feature_DepositCallCount(depositCallCount),
+    Feature_SkimCallCount(skimCallCount),
+    Feature_SyncCallCount(syncCallCount),
+    Feature_Token0CallCount(token0CallCount),
+    Feature_Token1CallCount(token1CallCount),
+    Feature_GetReservesCallCount(getReservesCallCount),
+    Feature_SwapCallCount(swapCallCount).
+    
+.decl Feature_SwapCallCount(swapCallCount: number)
+.output Feature_SwapCallCount
+Feature_SwapCallCount(swapCallCount) :-
+    n1 = count : { FunctionTokenCall(_, _, _, sig), contains("Swap", sig)},
+    n2 = count : { FunctionTokenCall(_, _, _, sig), contains("swap", sig)},
+    swapCallCount = n1 + n2.
+
+.decl Feature_TransferCallCount(transferCallCount: number)
+.output Feature_TransferCallCount
+Feature_TransferCallCount(transferCallCount) :-
+    transferCallCount = count : { FunctionTokenCall(_, _, _, "transfer(address,uint256)") }.
+
+.decl Feature_BalanceOfCallCount(balanceOfCallCount: number)
+.output Feature_BalanceOfCallCount
+Feature_BalanceOfCallCount(balanceOfCallCount) :-
+    balanceOfCallCount = count : { FunctionTokenCall(_, _, _, "balanceOf(address)") }.
+
+.decl Feature_ApproveCallCount(approveCallCount: number)
+.output Feature_ApproveCallCount
+Feature_ApproveCallCount(approveCallCount) :-
+    approveCallCount = count : { FunctionTokenCall(_, _, _, "approve(address,uint256)") }.
+
+.decl Feature_TotalSupplyCallCount(totalSupplyCallCount: number)
+.output Feature_TotalSupplyCallCount
+Feature_TotalSupplyCallCount(totalSupplyCallCount) :-
+    totalSupplyCallCount = count : { FunctionTokenCall(_, _, _, "totalSupply()") }.
+
+.decl Feature_AllowanceCallCount(allowanceCallCount: number)
+.output Feature_AllowanceCallCount
+Feature_AllowanceCallCount(allowanceCallCount) :-
+    allowanceCallCount = count : { FunctionTokenCall(_, _, _, "allowance(address,address)") }.
+
+.decl Feature_TransferFromCallCount(transferFromCallCount: number)
+.output Feature_TransferFromCallCount
+Feature_TransferFromCallCount(transferFromCallCount) :-
+    transferFromCallCount = count : { FunctionTokenCall(_, _, _, "transferFrom(address,address,uint256)") }.
+
+.decl Feature_MintCallCount(mintCallCount: number)
+.output Feature_MintCallCount
+Feature_MintCallCount(mintCallCount) :-
+    mintCallCount = count : { FunctionTokenCall(_, _, _, "mint(address,uint256)") }.
+
+.decl Feature_BurnCallCount(burnCallCount: number)
+.output Feature_BurnCallCount
+Feature_BurnCallCount(burnCallCount) :-
+    burnCallCount = count : { FunctionTokenCall(_, _, _, "burn(address,uint256)") }.
+
+.decl Feature_WithdrawCallCount(withdrawCallCount: number)
+.output Feature_WithdrawCallCount
+Feature_WithdrawCallCount(withdrawCallCount) :-
+    withdrawCallCount = count : { FunctionTokenCall(_, _, _, "withdraw(uint256)") }.
+
+.decl Feature_DepositCallCount(depositCallCount: number)
+.output Feature_DepositCallCount
+Feature_DepositCallCount(depositCallCount) :-
+    depositCallCount = count : { FunctionTokenCall(_, _, _, "deposit()") }.
+
+.decl Feature_SkimCallCount(skimCallCount: number)
+.output Feature_SkimCallCount
+Feature_SkimCallCount(skimCallCount) :-
+    skimCallCount = count : { FunctionTokenCall(_, _, _, "skim(address)") }.
+
+.decl Feature_SyncCallCount(syncCallCount: number)
+.output Feature_SyncCallCount
+Feature_SyncCallCount(syncCallCount) :-
+    syncCallCount = count : { FunctionTokenCall(_, _, _, "sync()") }.
+
+.decl Feature_Token0CallCount(token0CallCount: number)
+.output Feature_Token0CallCount
+Feature_Token0CallCount(token0CallCount) :-
+    token0CallCount = count : { FunctionTokenCall(_, _, _, "token0()") }.
+
+.decl Feature_Token1CallCount(token1CallCount: number)
+.output Feature_Token1CallCount
+Feature_Token1CallCount(token1CallCount) :-
+    token1CallCount = count : { FunctionTokenCall(_, _, _, "token1()") }.
+
+.decl Feature_GetReservesCallCount(getReservesCallCount: number)
+.output Feature_GetReservesCallCount
+Feature_GetReservesCallCount(getReservesCallCount) :-
+    getReservesCallCount = count : { FunctionTokenCall(_, _, _, "getReserves(address,address,address)") }.
+
+
+
+.decl StorageVariableAddrType(storVar:symbol, calleeVar:Variable)
+StorageVariableAddrType(storVar, addr):-
+  StorageVariableInfo(storVar, originStorVar, byteLow, byteHigh),
+  VarHoldsBytesOfStorVarFinal(var, _, $Variable($Constant(originStorVar)), byteLow, byteHigh),
+  widthBytes = 1 + byteHigh - byteLow,
+  widthBytes = 20,
+  DataFlows(var, addr),
+  AddressTypedVar(addr).
+
+StorageVariableAddrType(storVar, addr):-
+  StorageVariableInfo(storVar, originStorVar, byteLow, byteHigh),
+  VarWrittenToBytesOfStorVarFinal(var, _, $Variable($Constant(originStorVar)), byteLow, byteHigh),
+  widthBytes = 1 + byteHigh - byteLow,
+  widthBytes = 20,
+  DataFlows(addr, var),
+  AddressTypedVar(addr).
+
+StorageVariableAddrType(storVar, addrFrom):-
+  AddressTypedVar(addrFrom),
+  DataFlows(addrFrom, addr),
+  (EQ(_, otherAddr, addr, _) ; EQ(_, addr, otherAddr, _)),
+  DataFlows(var, otherAddr),
+  VarHoldsBytesOfStorVarFinal(var, _, $Variable($Constant(originStorVar)), byteLow, byteHigh),
+  StorageVariableInfo(storVar, originStorVar, byteLow, byteHigh),
+  widthBytes = 1 + byteHigh - byteLow,
+  widthBytes = 20.
+
+.decl ExternalCallTargetStorage(callStmt:Statement, storageSlot:symbol, byteLow:number, byteHigh:number)
+.output ExternalCallTargetStorage
+ExternalCallTargetStorage(callStmt, storageSlot, byteLow, byteHigh) :-
+  ExternalCall(_, callStmt),
+  (CALL(callStmt, _, calleeVar, _, _, _, _, _, _);STATICCALL(callStmt, _, calleeVar, _, _, _, _, _);DELEGATECALL(callStmt, _, calleeVar, _, _, _, _, _)),
+  !Variable_Value(calleeVar, _),
+  StorageVariableAddrType(storVar, calleeVar),
+  StorageVariableInfo(storVar, storageSlot, byteLow, byteHigh).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

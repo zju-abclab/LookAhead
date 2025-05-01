@@ -1,0 +1,20 @@
+/**
+  Global CFG construction of our main pipeline.
+  2-phase approach
+*/
+
+#include "global_components.dl"
+
+.init incompleteGlobal = IncompleteOptimizedGlobalAnalysis<CONTEXT_SENSITIVITY, LocalAnalysis>
+
+COPY_CODE_FULL(incompleteGlobal, postTrans)
+
+.init global = ExperimentalCompleteOptimizedGlobalAnalysis<CONTEXT_SENSITIVITY>
+
+global.StatementPushesUsedLabel(stmt):-
+  incompleteGlobal.VariableUsedInAsJumpdest(pushedVar),
+  postTrans.Statement_Defines(stmt, pushedVar).
+
+global.sens.ImportantBlockEdge(block, next):- incompleteGlobal.NeedToAddCtxAtEdge(block, next).
+
+COPY_CODE_FULL(global, postTrans)

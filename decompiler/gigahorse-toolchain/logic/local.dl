@@ -1,0 +1,350 @@
+/**
+  Local part of our pipeline, rather complex as it includes many transformations
+  in the form of statement insertions and block cloning ops.
+  These are mostly performed to normalize our IR output.
+*/
+
+#include "local_components.dl"
+#include "statement_insertor.dl"
+#include "decompiler_input.dl"
+
+.init factReader = StatementFactReader
+
+/*
+ ***********
+ * Transformation-aided decompilation
+ ***********
+ */
+
+// Map each pre-tranformed statement to the corresponding statement in the original bytecode 
+// (accounting for all of the early block-cloning rounds)
+.decl PreTransStatement_OriginalStatement(stmt: Statement, ogStmt: Statement)
+DEBUG_OUTPUT(PreTransStatement_OriginalStatement)
+PreTransStatement_OriginalStatement(ogStmt, ogStmt) :-
+  factReader.Statement_Opcode(ogStmt, _).
+
+PreTransStatement_OriginalStatement(rvtClStmt, ogStmt) :-
+  revertCloner.StatementToClonedStatement(_, ogStmt, rvtClStmt).
+
+
+.init revertCloner = RevertBlockCloner
+COPY_CODE(revertCloner, factReader)
+
+.decl ValidSelector(optionalSelector: OptionalSelector)
+
+#ifdef BLOCK_CLONING
+// Enable the early cloning of blocks to increase precision (sacrificing performance)
+.init blockCloner = BLOCK_CLONING
+// Old logic: Copy the output of revertCloner to the blockCloner
+//COPY_OUTPUT(blockCloner, revertCloner)
+
+/**
+  Transformation that helps the HeuristicBlockCloner
+*/
+.init clonerHelperInsertor = StatementInsertor
+COPY_OUTPUT(clonerHelperInsertor, revertCloner)
+.init beforeClonerLocal = PreTransLocalAnalysis
+COPY_OUTPUT(beforeClonerLocal, revertCloner)
+
+/**
+  If a `DUPx` statement copies an escaping jumpdest, replace the `DUP` with a `PUSH` of the same constant.
+  This helps the `HeuristicBlockCloner` (which clones blocks on a per-push basis) differentiate the two uses
+  of the same continuation, and clone if needed.
+*/
+clonerHelperInsertor.removeOp(dup),
+clonerHelperInsertor.insertOps(dup,
+  LIST(
+    STMT(PUSH4, label)
+  )
+) :-
+  beforeClonerLocal.DUPStatementCopiesPushedLabelVar(dup, label).
+
+// We can't clone fallthrough blocks, add a jump in that case
+clonerHelperInsertor.insertOps(fallthrough,
+  LIST(
+    STMT(PUSH4, as(fallthrough, symbol)),
+    STMT(JUMP, "")
+  )
+):-
+  beforeClonerLocal.FallthroughBlockUsedMultipleTimes(_, fallthrough),
+  beforeClonerLocal.JUMPDEST(fallthrough).
+
+COPY_OUTPUT(blockCloner, clonerHelperInsertor)
+// Transformation doesn't introduce new blocks, we can use revertCloner for the original block info
+blockCloner.Prev_Block_OriginalBlock(block, originalBlock):- revertCloner.Block_OriginalBlock(block, originalBlock).
+
+.init preTrans = PreTransLocalAnalysis
+COPY_OUTPUT(preTrans, blockCloner)
+
+PreTransStatement_OriginalStatement(heurClStmt, ogStmt) :-
+  blockCloner.StatementToClonedStatement(_, rvtClStmt, heurClStmt),
+  revertCloner.StatementToClonedStatement(_, ogStmt, rvtClStmt).
+
+PreTransStatement_OriginalStatement(heurClStmt, ogStmt) :-
+  blockCloner.StatementToClonedStatement(_, ogStmt, heurClStmt),
+  !revertCloner.StatementToClonedStatement(_, _, ogStmt).
+
+ValidSelector(optionalSelector):-
+  blockCloner.analysis.ValidSelector(optionalSelector).
+
+/**
+  When we don't manage to find any ValidSelectors (other than $NoSelector())
+  we should just propagate everything `preTrans` gives us.
+  REVISIT: Disabling this for now
+*/
+// ValidSelector(optionalSelector):-
+//   1 = count : blockCloner.analysis.ValidSelector(_),
+//   preTrans.IsOptionalSelector(optionalSelector).
+
+#else
+
+.init preTrans = PreTransLocalAnalysisAlt
+COPY_OUTPUT(preTrans, revertCloner)
+
+ValidSelector(optionalSelector):-
+  preTrans.IsOptionalSelector(optionalSelector).
+
+#endif
+
+INITIALIZE_STATEMENT_INSERTOR_FROM(insertor, preTrans, postTrans)
+
+
+// This one removes conditional calls
+insertor.removeOp(jumpStmt),
+insertor.removeOp(pushStmt),
+insertor.insertOps(pushStmt,
+  LIST(
+    STMT(PUSH4, MAKE_LABEL_REFERENCE(jumpDestStmt)),
+    STMT(JUMPI, "")
+  )
+),
+insertor.insertOps(jumpDestStmt,
+  LIST(
+    STMT(JUMPDEST, MAKE_LABEL_REFERENCE(jumpDestStmt)),
+    STMT(PUSH4, as(jumpDestStmt, symbol)),
+    STMT(JUMP, cat("PublicFunctionJump:", hash))
+  )
+) :-
+   (preTrans.BlockComparesSig(block, hash, selector);
+   preTrans.FallBackFunctionInfo(block, start, hash, selector)),
+   preTrans.PublicFunction(start, hash, selector),
+   ValidSelector(selector),
+   preTrans.Statement_Block(jumpDestStmt, start),
+   preTrans.JUMPDEST(jumpDestStmt),
+   preTrans.PushValue(pushStmt, as(jumpDestStmt, symbol)),
+   preTrans.Statement_Block(pushStmt, block),
+   preTrans.Statement_Defines(pushStmt, pushedVar),
+   preTrans.Statement_Uses_Local(jumpStmt, pushedVar, 0),
+   preTrans.BasicBlock_Tail(block, jumpStmt).
+
+// Vyper transformation
+insertor.insertOps(functionStartStmt,
+  LIST(
+    STMT(PUSH4, MAKE_LABEL_REFERENCE(hash)),
+    STMT(JUMP, cat("PublicFunctionJump:", hash)),
+    STMT(JUMPDEST, MAKE_LABEL_REFERENCE(hash))
+  )
+) :-
+   preTrans.BlockComparesSigVyper(block, hash, selector),
+   ValidSelector(selector),
+   preTrans.BasicBlock_Tail(block, tail),
+   preTrans.Statement_Next(tail, functionStartStmt),
+   !preTrans.BlockComparesSig(_, _, _).
+
+// transformation for pattern in via-ir contracts
+insertor.insertOps(functionStartStmt,
+  LIST(
+    STMT(PUSH4, MAKE_LABEL_REFERENCE(hash)),
+    STMT(JUMP, cat("PublicFunctionJump:", hash)),
+    STMT(JUMPDEST, MAKE_LABEL_REFERENCE(hash))
+  )
+) :-
+   preTrans.BlockComparesSigFallthroughSolidity(block, hash, selector),
+   ValidSelector(selector),
+   preTrans.BasicBlock_Tail(block, tail),
+   preTrans.Statement_Next(tail, functionStartStmt),
+   !preTrans.BlockComparesSig(_, hash, _).
+
+// Receive transformation
+insertor.insertOps(insertStmt,
+  LIST(
+    STMT(PUSH4, MAKE_LABEL_REFERENCE(RECEIVE_FUNCTION_SIGHASH)),
+    STMT(JUMP, cat("PublicFunctionJump:", RECEIVE_FUNCTION_SIGHASH)),
+    STMT(JUMPDEST, MAKE_LABEL_REFERENCE(RECEIVE_FUNCTION_SIGHASH))
+  )
+) :-
+  preTrans.BlockHasReceiveAsFallThrough(_, _, functionStart, _),
+  preTrans.BasicBlock_Head(functionStart, functionStartStmt),
+  preTrans.Statement_Opcode(functionStartStmt, op),
+  ((op != "JUMPDEST", insertStmt = functionStartStmt);
+  (op = "JUMPDEST", preTrans.Statement_Next(functionStartStmt, insertStmt))).
+
+// Add a jump to fallthrough blocks (excluding JUMPI blocks) that look like function calls
+// In other places (functions.dl, function_inliner.dl) we require the JUMP to exist
+insertor.insertOps(fallthrough,
+  LIST(
+    STMT(PUSH4, as(fallthrough, symbol)),
+    STMT(JUMP, "")
+  )
+):-
+  preTrans.FallthroughBlockPushesContinuation(_, fallthrough),
+  preTrans.JUMPDEST(fallthrough).
+
+// This one removes "throw jumps"
+insertor.removeOp(jmp),
+insertor.insertOps(jmp,
+  LIST(
+    STMT(POP, ""),
+    STMT(INVALID, "")
+  )
+) :-
+  preTrans.ThrowJump(jmp),
+  preTrans.JUMP(jmp).
+
+// This one removes conditional "throw jumps"
+// The old "target" was the invalid and the fallthrough
+// was the valid "next" block. So we create 2 labels
+// and add the "invalid" block after the old jumpi
+// and the JUMPDEST for the old valid "next" block right after it
+// We need to add this last JUMPDEST is because it was originally
+// a fallthrough block so it didn't need to start with a JUMPDEST
+// All this also requires adding ISZERO to reverse the condition.
+// Even if it did we don't break anything by adding an extra one.
+insertor.removeOp(jumpi),
+insertor.insertOps(jumpi,
+  LIST(
+    STMT(POP, ""),
+    STMT(ISZERO, ""),
+    STMT(PUSH4, MAKE_LABEL_REFERENCE(fallthrough)),
+    STMT(JUMPI, ""),
+    STMT(JUMPDEST, MAKE_LABEL_REFERENCE(jumpi)),
+    STMT(INVALID, ""),
+    STMT(JUMPDEST, MAKE_LABEL_REFERENCE(fallthrough))
+  )
+) :-
+  preTrans.ThrowJump(jumpi),
+  preTrans.JUMPI(jumpi),
+  preTrans.FallthroughStmt(jumpi, fallthrough).
+
+// SL: Removed this to get more completeness, especially in cases
+// of non-deployed code with uninitialized immutables
+// // This one removes conditional jumps that "always" jump
+// insertor.removeOp(jmpi),
+// insertor.insertOps(jmpi,
+//   LIST(
+//     STMT(SWAP1, ""),
+//     STMT(POP, ""),
+//     STMT(JUMP, "")
+//   )
+// ) :-
+//   preTrans.AlwaysJumps(jmpi).
+
+insertor.removeOp(codeCopy),
+insertor.removeOp(mload),
+insertor.insertOps(codeCopy,
+  LIST(
+    STMT(POP, ""),
+    STMT(POP, ""),
+    STMT(POP, "")
+  )
+),
+insertor.insertOps(mload,
+  LIST(
+    STMT(POP, ""),
+    STMT(PUSH32, const)
+  )
+) :-
+  preTrans.CODECOPYSmallConstWLoad(codeCopy, const, mload).
+
+insertor.removeOp(codeCopy),
+insertor.insertOps(codeCopy,
+  LIST(
+    STMT(SWAP2, ""),
+    STMT(POP, ""),
+    STMT(POP, ""),
+    STMT(PUSH32, const),
+    STMT(SWAP1, "")
+  )
+) :-
+  preTrans.CODECOPYSmallConstNoLoad(codeCopy, const).
+
+.init postTrans = PostTransLocalAnalysis
+
+// For Solidity, Vyper
+postTrans.PublicFunctionJump(block, hash, selector) :-
+   insertor.MetaData(stmt, meta),
+   insertor.PublicFunctionJumpMetadata(meta, hash),
+   postTrans.Statement_Block(stmt, block),
+   ValidSelector(selector),
+   (preTrans.BlockComparesSig(_, hash, selector);
+   preTrans.FallBackFunctionInfo(_, _, hash, selector);
+   preTrans.BlockComparesSigVyper(_, hash, selector);
+   preTrans.BlockComparesSigFallthroughSolidity(_, hash, selector);
+   (preTrans.BlockHasReceiveAsFallThrough(_, _, _, _), hash = RECEIVE_FUNCTION_SIGHASH, selector = $NoSelector())
+   ).
+   // we may lose some precision here when two blocks have the same hex
+
+// For Vyper
+postTrans.PublicFunction(block, hash, selector):-
+   insertor.MetaData(stmt, meta),
+   postTrans.JUMPDEST(stmt),
+   postTrans.Statement_Block(stmt, block),
+   preTrans.BlockComparesSigVyper(_, hash, selector),
+   ValidSelector(selector),
+   !preTrans.BlockComparesSig(_, _, _),
+   ISLABEL(meta), hash = GET_LABEL_REFERENCE(meta).
+
+postTrans.PublicFunction(block, hash, selector) :-
+   insertor.MetaData(stmt, meta),
+   postTrans.JUMPDEST(stmt),
+   postTrans.Statement_Block(stmt, block),
+   preTrans.BlockComparesSigFallthroughSolidity(_, hash, selector),
+   ValidSelector(selector),
+   !preTrans.BlockComparesSig(_, hash, _),
+   ISLABEL(meta), hash = GET_LABEL_REFERENCE(meta).
+
+// For receive functions
+postTrans.PublicFunction(block, hash, $NoSelector()) :-
+   preTrans.BlockHasReceiveAsFallThrough(_, _, _, _),
+   hash = RECEIVE_FUNCTION_SIGHASH,
+   hash = GET_LABEL_REFERENCE(meta), ISLABEL(meta),
+   insertor.MetaData(stmt, meta),
+   postTrans.JUMPDEST(stmt),
+   postTrans.Statement_Block(stmt, block).
+
+postTrans.PublicFunction(block , hash, selector):- 
+  (preTrans.BlockComparesSig(_, hash, selector);
+  preTrans.FallBackFunctionInfo(_, _, hash, selector)),
+  preTrans.PublicFunction(block, hash, selector),
+  ValidSelector(selector).
+
+// Code chunking logic reserved for future EIP
+
+#define CHUNK_SIZE 31
+.type Chunk <: number
+
+.decl Statement_CodeChunkAccessed(s: Statement, c: Chunk)
+
+// Normal statement
+Statement_CodeChunkAccessed(stmt, @hex_to_number(stmt) / CHUNK_SIZE) :-
+  preTrans.Statement_Block(stmt, _).
+
+// Multi-byte instruction that crosses chunk borders
+Statement_CodeChunkAccessed(stmt, @hex_to_number(next_stmt) / CHUNK_SIZE) :-
+  preTrans.Statement_Block(stmt, _),
+  preTrans.Statement_Next(stmt, next_stmt),
+  (@hex_to_number(next_stmt) - 1) / CHUNK_SIZE != @hex_to_number(stmt) / CHUNK_SIZE.
+
+// Codecopy
+Statement_CodeChunkAccessed(stmt, n / CHUNK_SIZE) :-
+  preTrans.CODECOPYStatement(stmt, codeOffsetNumHex, lenHex),
+  codeOffset = @hex_to_number(codeOffsetNumHex),
+  len = @hex_to_number(lenHex),
+  n = range(codeOffset, codeOffset + len, 1).
+
+// Jumps to invalid addresses
+Statement_CodeChunkAccessed(stmt, @hex_to_number(targetValue) / CHUNK_SIZE) :-
+  preTrans.Statement_Block(stmt, block),
+  preTrans.ThrowJump(stmt), preTrans.JUMP(stmt),
+  preTrans.ImmediateBlockJumpTarget(block, variable),
+  preTrans.Variable_Value(variable, targetValue).

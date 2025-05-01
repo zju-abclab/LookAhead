@@ -1,0 +1,31 @@
+
+/*
+ * Context sensitivity selection needs a little bit of macro expansion for generality
+ */
+
+#ifndef CONTEXT_SENSITIVITY
+  // TransactionalContext is default
+//  #define CONTEXT_SENSITIVITY TransactionalContext
+//  #define CONTEXT_SENSITIVITY FinitePreciseContext
+//  #define CONTEXT_SENSITIVITY HybridPreciseContext
+//  #define CONTEXT_SENSITIVITY TransactionalWithResidualContext
+  #define CONTEXT_SENSITIVITY TransactionalWithShrinkingContext
+  #define BLOCK_CLONING HeuristicBlockCloner
+#endif
+
+#include "types_defs.dl"
+
+#include "local.dl"
+#include "global.dl"
+
+#include "functions.dl"
+#include "decompiler_output.dl"
+
+
+#ifndef NO_ANALYTICS
+#include "decompiler_analytics.dl"
+#endif
+
+#ifdef DEBUG
+#include "debug.dl"
+#endif
