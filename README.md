@@ -97,7 +97,7 @@ Perform detection tests using the Jupyter Notebook `online_test/detection/evalua
 <br/>
 
 ## Citation
-Preprint available at [https://arxiv.org/abs/2401.07261](https://arxiv.org/abs/2401.07261).
+Published version available at: [https://doi.org/10.1145/3729353](https://doi.org/10.1145/3729353).
 
 ```bibtex
 @article{ren2025lookahead,
