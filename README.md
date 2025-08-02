@@ -21,6 +21,11 @@ This folder contains the logic implemented for conducting online testing to meas
 - For detection, we use `contract_feature_handler.py` to extract contract features and `classification_evaluator.py` to load the trained models and produce predictions. An example usage is demonstrated in `evaluate.ipynb`.
 (logic located under `detection`)
 
+We provide a `report` file, listing all true positive adversarial contracts detected during both experiment periods described in the paper.
+
+> [!NOTE]
+> Addresses marked with a `*` were originally identified as true positives by our research team, but may be questionable after rechecking them post-publication. We include them here for transparency, but recommend treating them with caution. 
+
 <br/>
 
 ## Dataset
